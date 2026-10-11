@@ -27,16 +27,9 @@ jobs:
     timeout-minutes: 30
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
     
     steps:
-
-      # =========================
-      # NODE.JS
-      # =========================
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
 
       # =========================
       # DOWNLOAD ZIP
@@ -124,11 +117,31 @@ jobs:
           channel: "stable"
           cache: true
 
+      # Cache Gradle & pub: build berikutnya tidak download ulang dependensi
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Cache Pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml', '**/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
       # ==========================================================
       # 🔍 TAHAP ANALYZE — STEP 1: Jalankan & cetak hasil
       # (Dipisah dari exit 1 biar log tidak ter-truncate)
       # ==========================================================
       - name: Analyze Project Code
+        if: ${{ github.event.inputs.only_analyze == 'true' }}
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           echo "=== Starting Automated Code Analysis ==="
@@ -160,13 +173,6 @@ jobs:
         run: |
           echo "✅ Analyze-only mode aktif. Workflow selesai dengan sukses."
           exit 0
-
-      # =========================
-      # FLUTTER DOCTOR
-      # =========================
-      - name: Flutter Doctor
-        if: ${{ github.event.inputs.only_analyze != 'true' }}
-        run: flutter doctor
 
       # ==========================================================
       # 📦 TAHAP DOWNLOAD DEPENDENSI (PUB GET)
@@ -219,6 +225,22 @@ jobs:
             cd -
           fi
 
+      # ==========================================================
+      # 🔍 ANALYZE SAAT BUILD GAGAL (supaya build normal tidak lambat)
+      # Output pakai marker yang sama, bot tetap bisa menampilkan hasil analyze.
+      # ==========================================================
+      - name: Analyze on Failure
+        if: ${{ failure() && github.event.inputs.only_analyze != 'true' && env.PROJECT_DIR != '' }}
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -f "pubspec.yaml" ]; then
+            flutter analyze > analyze_report.txt 2>&1 || true
+            echo "[RESULT_ANALYZE]"
+            cat analyze_report.txt
+            echo "[END_RESULT_ANALYZE]"
+            rm -f analyze_report.txt
+          fi
+
       # =========================
       # CHECK APK
       # =========================
@@ -254,5 +276,6 @@ jobs:
           name: flutter-${{ github.event.inputs.build_type }}-${{ github.event.inputs.tag }}
           path: ${{ env.APK_PATH }}
           retention-days: 1
+          compression-level: 0
           if-no-files-found: error
           
